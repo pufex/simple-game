@@ -27,6 +27,13 @@ struct board_item {
 	int col;
 };
 
+struct Enemy_enc {
+	char type;
+	int hp;
+	int hp_max;
+	int attack;
+};
+
 struct Player {
 	int max_hp;
 	int hp;
@@ -35,6 +42,9 @@ struct Player {
 	int row;
 	int col;
 	struct inv_item* inventory;
+
+	// encounter only members
+	char used_defend;
 };
 
 struct Enemy {
@@ -99,9 +109,19 @@ int give_item(struct inv_item*, int, int);
 // cleans an item from the board
 void clean_item(struct Field*, struct board_item*, int);
 
-// fights for each type of enemy.
-char encounter_goblin(struct Player*, struct Enemy*);
-char encounter_cyclops(struct Player*, struct Enemy*);
+
+// TODO: create a generic encounter function which returns encounter result,
+// ... and wraps all the logic in a single function.
+
+char start_encounter(struct Player*, struct Enemy*);
+void print_enemy_enc_status(struct Enemy_enc*);
+void print_enc_options(int);
+void setup_enc_enemy(struct Enemy_enc*);
+
+// enemy type specific encounter behavior functions
+void goblin_behavior(struct Player*, struct Enemy_enc*);
+void cyclops_behavior(struct Player*, struct Enemy_enc*);
+
 
 // removes defeated enemy from the board
 void clean_enemy(struct Field*, struct Enemy*, int);
@@ -409,25 +429,19 @@ char start_game(struct Player* player, struct Field* board, int r, int k) {
 		// Check if player has encountered an enemy:
 		enc_enemy = (board + (player->row) * k + player->col)->enemy;
 		if (enc_enemy) { // if so, start encounter based on enemy type
-			switch (enc_enemy->type) {
-				case 'A':
-					outcome_enc = encounter_goblin(player, enc_enemy);
-					break;
-				case 'B':
-					outcome_enc = encounter_cyclops(player, enc_enemy);
-					break;
-			}
-
-
+			outcome_enc = start_encounter(player, enc_enemy);
 			switch (outcome_enc) {
-				case 0: // encounter lost scenario
+				case 0:
 					reason = 0;
 					break;
-				case 1: // ecnounter won scenario
+				case 1:
 					clean_enemy(board, enc_enemy, k);
-					enemy_counter--;
 					break;
 			}
+		}
+
+		if (reason == 0) {
+			break;
 		}
 	
 		// TODO: Check if player has encountered an item:
@@ -458,6 +472,10 @@ char start_game(struct Player* player, struct Field* board, int r, int k) {
 		free(enemies);
 	}
 
+	if (items != 0) {
+		free(items);
+	}
+
 	system("CLS");
 	return reason;
 }
@@ -466,9 +484,12 @@ void set_player(struct Field* board, struct Player* player) {
 	if (player == 0)
 		return -1;
 	// Set up players stats
-	player->max_hp = 10000;
-	player->hp = 10000;
+	player->max_hp = 200;
+	player->hp = 200;
 	player->attack = 25;
+
+	// Set up default battle parameters
+	player->used_defend = 0;
 
 	// Place player in the start of the board.
 	player->row = 0;
@@ -530,7 +551,7 @@ struct board_item* set_items(struct Field* board, int r, int k) {
 }
 
 void print_player_status(struct Player* player) {
-	printf("Status: \n\n");
+	printf("Player status: \n");
 	printf("HP: %d/%d, ATK: %d\n\n", player->hp, player->max_hp, player->attack);
 }
 
@@ -615,11 +636,11 @@ void inventory_menu(struct Player* player) {
 }
 
 void item_menu(struct Player* player, int index) {
-	char picked_option = 1, commited_option = -1, success = 0;
+	char picked_option = 1, commited_option, success = 0;
 	int i;
 	struct inv_item* inventory = player->inventory;
 	do {
-
+		commited_option = -1;
 		// Layout
 		print_player_status(player);
 		printf("%s - ilość: %d\n\n", (inventory + index)->name, (inventory + index)->amount);
@@ -652,16 +673,16 @@ void item_menu(struct Player* player, int index) {
 				// ... of item under giver index.
 				success = use_item(player, index);
 				if (success == 0) {
-					printf("You don't have this item. \n\n");
+					printf("You can't use item that you don't have. \n\n");
 				}
 				break;
 			// Remove 1 item from inventory
 			case 2:
 				// Obviously, function will not have player have negative
 				// ... amount of items.
-				remove_item(inventory, index);
+				success = remove_item(inventory, index);
 				if (success == 0) {
-					printf("You don't have any of these items.\n\n");
+					printf("You can't remove items that you don't have.\n\n");
 				}
 				break;
 		}
@@ -791,118 +812,112 @@ void clean_item(struct Field* board, struct board_item* item, int k) {
 	(board + (item->row) * k + (item->col))->item = 0;
 }
 
-char encounter_goblin(struct Player* player, struct Enemy* enemy) {
+char start_encounter(struct Player* player, struct Enemy* enemy) {
 	char outcome = -1;
-	int g_hp = 150, g_max_hp = 150, g_attack = 10;
-	char picked_choice = 1, commited_choice = 0, key;
-	printf("You encounter a goblin. You begin fight. \n\n");
+	int picked = 1, action = 0;
+	struct Enemy_enc enemy_enc;
+	enemy_enc.type = enemy->type;
+	setup_enc_enemy(&enemy_enc);
 	do {
 		do {
-			commited_choice = 0;
-			printf("Status: \n");
-			printf("hp: %d/%d, attack: %d\n\n", player->hp, player->max_hp, player->attack);
-			printf("Enemy status: ");
-			printf("hp: %d/%d, attack: %d\n\n", g_hp, g_max_hp, g_attack);
-			printf("What do you want to do?\n\n");
-			if (picked_choice == 1) {
-				printf("->");
-			}
-			printf("1. Attack\n");
-			if (picked_choice == 2) {
-				printf("->");
-			}
-			printf("2. Defend (TODO)\n");
-			list_navigator(&picked_choice, &commited_choice, 1, 2);
+			print_player_status(player);
+			printf("\n");
+
+			print_enemy_enc_status(&enemy_enc);
+			printf("\n");
+
+			print_enc_options(picked);
+			list_navigator(&picked, &action, 1, 2);
 			system("CLS");
-		} while (commited_choice == 0);
+		} while (action == 0);
 
-		system("CLS");
-
-		switch (commited_choice) {
+		switch (action) {
+			// Attack
 			case 1:
-				g_hp -= player->attack;
+				enemy_enc.hp -= player->attack;
+				printf("Player deals %d to enemy.\n", player->attack);
 				break;
 			case 2:
+				// TODO: implement more player stats.
+				player->used_defend = 1;
+				printf("Player uses defend.\n");
 				break;
 		}
 
-		if (g_hp <= 0) {
+		if (enemy_enc.hp <= 0) {
 			outcome = 1;
 			break;
-		}else{
-			printf("Player deals %d to Goblin.\n", g_attack);
 		}
 
-		player->hp -= g_attack;
+		switch (enemy_enc.type) {
+			case 'A':
+				goblin_behavior(player, &enemy_enc);
+				break;
+			case 'B':
+				cyclops_behavior(player, &enemy_enc);
+				break;
+		}
+
 		if (player->hp <= 0) {
-			outcome = 0;
+			outcome = -1;
 			break;
 		}
-		else {
-			printf("Goblin deals %d damage!\n", g_attack);
-		}
+
 	} while (outcome == -1);
 	return outcome;
 }
 
-char encounter_cyclops(struct Player* player, struct Enemy* enemy) {
-	char outcome = -1;
-	int cycl_hp = 500, cycl_max_hp = 500, cycl_attack = 50;
-	int min = 0, max = 5, rand_dmg;
-	char picked_choice = 1, commited_choice = 0, key;
-	printf("You encounter cyclops. You begin fight. \n\n");
-	do {
-		do {
-			commited_choice = 0;
-			printf("Status: \n");
-			printf("hp: %d/%d, attack: %d\n\n", player->hp, player->max_hp, player->attack);
-			printf("Cyclops status: ");
-			printf("hp: %d/%d, attack: %d\n\n", cycl_hp, cycl_max_hp, cycl_attack);
-			printf("What do you want to do?\n\n");
-			if (picked_choice == 1) {
-				printf("->");
-			}
-			printf("1. Attack\n");
-			if (picked_choice == 2) {
-				printf("->");
-			}
-			printf("2. Defend (TODO)\n");
-			list_navigator(&picked_choice, &commited_choice, 1, 2);
-			system("CLS");
-		} while (commited_choice == 0);
+void print_enemy_enc_status(struct Enemy_enc* enemy_enc){
+	printf("Enemy status: \n");
+	printf("HP: %d/%d, ATK: %d\n", enemy_enc->hp, enemy_enc->hp_max, enemy_enc->attack);
+}
 
+void print_enc_options(int picked) {
+	printf("Pick your option.\n\n");
+	if (picked == 1) {
+		printf("->");
+	}
+	printf("1. Attack\n");
 
-		switch (commited_choice) {
-		case 1:
-			cycl_hp -= player->attack;
-			printf("Player deals %d to Cyclops.\n", cycl_attack);
+	if (picked == 2) {
+		printf("->");
+	}
+	printf("2. Defend\n");
+}
+;
+void setup_enc_enemy(struct Enemy_enc* enemy_enc) {
+	printf("Enemy type: %c", enemy_enc->type);
+	switch (enemy_enc->type) {
+		case 'A':
+			enemy_enc->hp = 100;
+			enemy_enc->hp_max = 100;
+			enemy_enc->attack = 10;
+			printf("You have encountered a goblin!\n\n");
 			break;
-		case 2:
+		case 'B':
+			enemy_enc->hp = 200;
+			enemy_enc->hp_max = 200;
+			enemy_enc->attack = 50;
+			printf("You have encountered a cyclops!\n\n");
 			break;
-		}
+	}
+}
 
-		if (cycl_hp <= 0) {
-			outcome = 1;
-			printf("Cyclops defeated!\n");
-			break;
-		}
+void goblin_behavior(struct Player* player, struct Enemy_enc* enemy_enc) {
+	player->hp -= enemy_enc->attack;
+	printf("Goblin attacks and deals %d dmg to player.\n", enemy_enc->attack);
+}
 
-		rand_dmg = rand() % (abs(max - min) + 1) + min;
-		if (rand_dmg == 5) {
-			player->hp -= cycl_attack;
-			printf("Cyclops hits! Critical dmg %d dealt to player!\n", cycl_attack);
-		}
-		else {
-			player->hp -= rand_dmg;
-			printf("Cyclops hits ground. Deals %d dmg to player.\n", rand_dmg);
-		}
-
-		if (player->hp <= 0) {
-			outcome = 0;
-			break;
-		}
-	} while (outcome == -1);
-	return outcome;
+void cyclops_behavior(struct Player* player, struct Enemy_enc* enemy_enc) {
+	int probs = rand_min_max(0, 4);
+	if (probs == 4) {
+		player->hp -= enemy_enc->attack;
+		printf("Cyclops directly hits the player. Deals %d dmg.\n", enemy_enc->attack);
+	}
+	else {
+		player->hp -= probs;
+		printf("Cyclops missed player and hit the ground. Dealt %d dmg.\n", probs);
+	}
 }
 
 void clean_enemy(struct Field* board, struct Enemy* enemy, int k) {
